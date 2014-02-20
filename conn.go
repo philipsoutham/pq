@@ -107,7 +107,7 @@ func Open(name string) (_ driver.Conn, err error) {
 	o.Set("port", "5432")
 	// N.B.: Extra float digits should be set to 3, but that breaks
 	// Postgres 8.4 and older, where the max is 2.
-	o.Set("extra_float_digits", "2")
+	//o.Set("extra_float_digits", "2")
 	for k, v := range parseEnviron(os.Environ()) {
 		o.Set(k, v)
 	}
@@ -1143,7 +1143,6 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 
 	panic("not reached")
 }
-
 
 // QuoteIdentifier quotes an "identifier" (e.g. a table or a column name) to be
 // used as part of an SQL statement.  For example:
