@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/md5"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/binary"
@@ -11,9 +12,12 @@ import (
 	"fmt"
 	"github.com/lib/pq/oid"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
+	"os/user"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,9 +26,10 @@ import (
 
 // Common error types
 var (
-	ErrSSLNotSupported     = errors.New("pq: SSL is not enabled on the server")
-	ErrNotSupported        = errors.New("pq: Unsupported command")
-	ErrInFailedTransaction = errors.New("pq: Could not complete operation in a failed transaction")
+	ErrNotSupported              = errors.New("pq: Unsupported command")
+	ErrInFailedTransaction       = errors.New("pq: Could not complete operation in a failed transaction")
+	ErrSSLNotSupported           = errors.New("pq: SSL is not enabled on the server")
+	ErrSSLKeyHasWorldPermissions = errors.New("pq: private key file has group or world access. Permissions should be u=rw (0600) or less.")
 )
 
 type drv struct{}
@@ -706,6 +711,8 @@ func (cn *conn) ssl(o values) {
 		errorf(`unsupported sslmode %q; only "require" (default), "verify-full", and "disable" supported`, mode)
 	}
 
+	cn.setupSSLCertKey(&tlsConf, o)
+
 	w := cn.writeBuf(0)
 	w.int32(80877103)
 	cn.send(w)
@@ -723,6 +730,60 @@ func (cn *conn) ssl(o values) {
 	cn.c = tls.Client(cn.c, &tlsConf)
 }
 
+func (cn *conn) setupSSLCertKey(tlsConf *tls.Config, o values) {
+	sslkey := o.Get("sslkey")
+	sslcert := o.Get("sslcert")
+
+	if sslkey != "" && sslcert != "" {
+		// If the user has set a sslkey and sslcert make sure they exist
+		files := []string{sslkey, sslcert}
+		for _, f := range files {
+			_, err := os.Stat(f)
+			if err != nil {
+				panic(err)
+			}
+		}
+	} else {
+		// Automatically load certificates from ~/.postgresql
+		user, err := user.Current()
+		if err == nil {
+			sslkey = filepath.Join(user.HomeDir, ".postgresql", "postgresql.key")
+			sslcert = filepath.Join(user.HomeDir, ".postgresql", "postgresql.crt")
+		}
+	}
+
+	kstat, kerr := os.Stat(sslkey)
+
+	if kerr == nil {
+		kmode := kstat.Mode()
+		if kmode == kmode&0600 {
+			cert, err := tls.LoadX509KeyPair(sslcert, sslkey)
+			if err != nil {
+				panic(err)
+			}
+			tlsConf.Certificates = []tls.Certificate{cert}
+		} else {
+			panic(ErrSSLKeyHasWorldPermissions)
+		}
+	}
+
+	if o.Get("sslrootcert") != "" {
+		tlsConf.RootCAs = x509.NewCertPool()
+
+		cert, err := ioutil.ReadFile(o.Get("sslrootcert"))
+
+		if err != nil {
+			panic(err)
+		}
+
+		ok := tlsConf.RootCAs.AppendCertsFromPEM(cert)
+
+		if !ok {
+			errorf("couldn't parse pem in sslrootcert")
+		}
+	}
+}
+
 func (cn *conn) startup(o values) {
 	w := cn.writeBuf(0)
 	w.int32(196608)
@@ -733,7 +794,9 @@ func (cn *conn) startup(o values) {
 	for k, v := range o {
 		// skip options which can't be run-time parameters
 		if k == "password" || k == "host" ||
-			k == "port" || k == "sslmode" {
+			k == "port" || k == "sslmode" ||
+			k == "sslcert" || k == "sslkey" ||
+			k == "sslrootcert" {
 			continue
 		}
 		// The protocol requires us to supply the database name as "database"
@@ -1081,6 +1144,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 	panic("not reached")
 }
 
+
 // QuoteIdentifier quotes an "identifier" (e.g. a table or a column name) to be
 // used as part of an SQL statement.  For example:
 //
@@ -1099,6 +1163,9 @@ func QuoteIdentifier(name string) string {
 	return `"` + strings.Replace(name, `"`, `""`, -1) + `"`
 }
 
+func quoteIdentifier(name string) string {
+	return QuoteIdentifier(name)
+}
 func md5s(s string) string {
 	h := md5.New()
 	h.Write([]byte(s))
@@ -1195,7 +1262,13 @@ func parseEnviron(env []string) (out map[string]string) {
 			accrue("application_name")
 		case "PGSSLMODE":
 			accrue("sslmode")
-		case "PGREQUIRESSL", "PGSSLCERT", "PGSSLKEY", "PGSSLROOTCERT", "PGSSLCRL":
+		case "PGSSLCERT":
+			accrue("sslcert")
+		case "PGSSLKEY":
+			accrue("sslkey")
+		case "PGSSLROOTCERT":
+			accrue("sslrootcert")
+		case "PGREQUIRESSL", "PGSSLCRL":
 			unsupported()
 		case "PGREQUIREPEER":
 			unsupported()
