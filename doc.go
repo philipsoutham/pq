@@ -47,6 +47,7 @@ supported:
 	* sslmode - Whether or not to use SSL (default is require, this is not the default for libpq)
 	* sslcert - Cert file location. The file must contain PEM encoded data. (optional)
 	* sslkey -  Key file location. The file must contain PEM encoded data. (optional)
+	* sslrootcert - Certificate authority file location. The file must contain PEM encoded data. (optional)
 	* fallback_application_name - An application_name to fall back to if one isn't provided.
 	* connect_timeout - Maximum wait for connection, in seconds. Zero or not specified means wait indefinitely.
 
